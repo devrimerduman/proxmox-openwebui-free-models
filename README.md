@@ -1,63 +1,74 @@
 # Proxmox OpenWebUI Free Models
 
-This script ensures that **only free models from [OpenRouter](https://openrouter.ai/)** remain active inside [OpenWebUI](https://github.com/open-webui/open-webui).  
-Paid models are automatically disabled. When OpenRouter adds new models, the script updates the database so only free ones are enabled.
+Ensure that **only free models from [OpenRouter](https://openrouter.ai/)** are selectable in [OpenWebUI](https://github.com/open-webui/open-webui) by writing an allow-list (whitelist) to the OpenWebUI config database.  
+Paid models are excluded from the connection's model list. When OpenRouter adds new models, re-run to keep the allow-list up to date.
+
+> **Why allow-list?**  
+> Recent OpenWebUI builds populate the Models page dynamically from providers and do not persist per-model toggle states in a dedicated table. The reliable way to enforce “free-only” is an allow-list under `openai.api_configs.*.model_ids` inside the `config` table JSON.
 
 ## Features
-- Automatically detects free vs. paid models from OpenRouter API
-- Updates OpenWebUI SQLite database (`webui.db`)
-- Safe: backs up database before changes
-- Can run manually or via cron for automation
+- Fetches the latest model catalog from OpenRouter API
+- Classifies models as **free** vs **paid** (by ID patterns and `pricing`)
+- Updates the OpenWebUI SQLite DB (`config.data` JSON) to allow only free models
+- Dry-run mode for safety; backs up DB recommended
 
 ## Requirements
 - Python 3.7+
 - `sqlite3`
-- An OpenRouter API key (get it from [OpenRouter](https://openrouter.ai))
+- An **OpenRouter API key** (Dashboard → API Keys)
 
-## Installation
-Clone the repository:
-
-```bash
-git clone https://github.com/yourusername/proxmox-openwebui-free-models.git
-cd proxmox-openwebui-free-models
-chmod +x proxmox_openwebui_free_models.py
+## Where is the DB?
+Typical path in LXC with native backend:
+```
+/opt/open-webui/backend/data/webui.db
 ```
 
-## Usage
+## Quick Start (one-time run on your LXC)
 
-### 1. Dry-run (preview changes)
-This shows which models would be activated or deactivated without modifying the database:
 ```bash
-OPENROUTER_API_KEY="your_api_key_here" python3 proxmox_openwebui_free_models.py --verbose
+# 0) Enter the LXC where OpenWebUI runs
+pct enter <LXC_ID>     # e.g. pct enter 101
+
+# 1) Install tools
+apt update && apt install -y python3 sqlite3
+
+# 2) Backup DB (recommended)
+DB=/opt/open-webui/backend/data/webui.db
+cp -a "$DB" "${DB}.bak-$(date +%F-%H%M)"
+
+# 3) Set API key for this shell
+export OPENROUTER_API_KEY="sk-or-v1-xxxxxxxx"
+
+# 4) Dry-run (preview)
+python3 proxmox_openwebui_free_models.py --db "$DB" --verbose
+
+# 5) Apply
+python3 proxmox_openwebui_free_models.py --db "$DB" --apply --verbose
+
+# 6) Restart service if needed
+systemctl restart open-webui 2>/dev/null || docker restart open-webui 2>/dev/null || true
 ```
 
-### 2. Apply changes (update database)
-This will actually modify the `webui.db` so only free models remain active:
-```bash
-OPENROUTER_API_KEY="your_api_key_here" python3 proxmox_openwebui_free_models.py --apply --verbose
-```
-
-### 3. Using a custom database path
-If your OpenWebUI database is in a non-standard location:
-```bash
-OPENROUTER_API_KEY="your_api_key_here" python3 proxmox_openwebui_free_models.py --apply --db /app/data/webui.db
-```
-
-### 4. Automating with cron
-To automatically run the script every hour:
+## Cron (keep it updated hourly)
 
 ```cron
-0 * * * * OPENROUTER_API_KEY=your_api_key_here /path/to/proxmox_openwebui_free_models.py --apply >>/var/log/openwebui-free.log 2>&1
+0 * * * * OPENROUTER_API_KEY=sk-or-v1-xxxxxxxx \
+python3 /path/to/proxmox_openwebui_free_models.py --db /opt/open-webui/backend/data/webui.db --apply >>/var/log/openwebui-free-only.log 2>&1
 ```
 
-This ensures that when OpenRouter releases new models, only free ones are kept active.
+## Optional: Keep a second "All models" connection
+OpenWebUI supports multiple API connections. You can keep:
+- **Connection A (All)** → `model_ids: []` (shows everything)
+- **Connection B (Free)** → managed by this script (free only)
 
-## How it Works
-1. The script fetches the latest models list from OpenRouter API.
-2. It classifies models as **free** if:
-   - The model ID contains `:free`, `-free`, `(free)`
-   - OR all pricing fields are `0` or `None`
-3. It updates the `webui.db` database so only free models are active and visible.
+Switch between them in the UI as needed.
+
+## How it works
+1. Calls `GET https://openrouter.ai/api/v1/models`
+2. Marks a model as **free** if:
+   - Model ID hints like `:free`, `-free`, `(free)` are present **OR**
+   - All numeric price fields are `0`/`None`
+3. Updates `config.data.openai.api_configs.<index>.model_ids` with free IDs (default index: `0`)
 
 ## License
-MIT License
+MIT
